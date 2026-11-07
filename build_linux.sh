@@ -1,21 +1,21 @@
 #!/bin/sh
 # build_linux.sh - assemble and link the Linux server, and compile the test tools.
 #
-# Needs UASM (https://github.com/Terraspace/UASM), GNU ld and gcc. Point UASM at the assembler
-# if it isn't on your PATH. Sources are shared with Windows; Windows-only unwind directives are
+# Needs UASM (https://github.com/Terraspace/UASM), GNU ld and gcc. Point UASM_BIN at the assembler
+# if it isn't on your PATH. Don't use a variable called UASM: the assembler reads that for options. Sources are shared with Windows; Windows-only unwind directives are
 # removed first, as ELF has no use for them.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out="$root/build"
 gen="$out/linux"
-UASM=${UASM:-uasm}
+UASM_BIN=${UASM_BIN:-uasm}
 mkdir -p "$gen"
 
 for name in util os_linux input sim tier net_linux main; do
     sed -E -e 's/\bPROC FRAME\b/PROC/' \
            -e '/^[[:space:]]*\.(pushreg|allocstack|setframe|endprolog)\b/d' \
            "$root/src/$name.asm" > "$gen/$name.asm"
-    "$UASM" -nologo -q -elf64 -DLINUX "-I$root/src" "-Fo$gen/$name.o" "$gen/$name.asm"
+    "$UASM_BIN" -nologo -q -elf64 -DLINUX "-I$root/src" "-Fo$gen/$name.o" "$gen/$name.asm"
 done
 
 # No C runtime: a static executable with its own _start.

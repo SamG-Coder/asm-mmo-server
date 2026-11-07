@@ -1,7 +1,7 @@
 ; defs.inc - shared constants, data layout, wire protocol and imports.
 IFDEF LINUX
     .x64
-    .model flat
+    OPTION EVEX:1                   ; UASM: allow AVX-512
 ENDIF
 OPTION CASEMAP:NONE
 

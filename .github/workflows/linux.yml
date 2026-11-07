@@ -46,7 +46,7 @@ jobs:
         run: sudo sysctl -w net.core.rmem_max=67108864 net.core.wmem_max=67108864
 
       - name: Build
-        run: UASM=~/uasm-bin/uasm sh build_linux.sh
+        run: UASM_BIN=~/uasm-bin/uasm sh build_linux.sh
 
       - name: Inspect the server binary
         run: |
