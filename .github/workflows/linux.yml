@@ -12,8 +12,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      # Pinned, so a change in the assembler can't silently change what gets built.
-      UASM_COMMIT: bffb18461dd541479064990c3b2750ab50ae23e2
+      # Release v2.56.2, pinned so a change in the assembler can't silently change what gets
+      # built. UASM's master branch doesn't currently compile on Linux.
+      UASM_COMMIT: 4dc0a4f96e2296c2e56c9224a2a0453c99470e2c
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +38,8 @@ jobs:
           git init -q
           git fetch -q --depth 1 https://github.com/Terraspace/UASM.git "$UASM_COMMIT"
           git checkout -q FETCH_HEAD
-          make -f gccLinux64.mak CFLAGS_EXTRA= -j4 || make -f gccLinux64.mak -j4
+          make -f gccLinux64.mak CFLAGS=-fcommon 2>&1 | grep -v -E 'warning|note:|^\s|^In file|^ +from' || true
+          test -x GccUnixR/uasm
           cp "$(find . -type f -name uasm -perm -u+x | head -n 1)" ~/uasm-bin/uasm
 
       - name: Allow large socket buffers
