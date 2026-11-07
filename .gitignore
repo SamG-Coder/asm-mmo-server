@@ -1,0 +1,3 @@
+# Everything build.ps1 and the benchmark scripts produce
+build/
+__pycache__/

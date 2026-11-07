@@ -1,0 +1,8 @@
+; Import list for the kernel functions the driver calls. The WDK isn't needed to build it.
+LIBRARY ntoskrnl.exe
+EXPORTS
+    IoCreateDevice
+    IoDeleteDevice
+    IoCreateSymbolicLink
+    IoDeleteSymbolicLink
+    IofCompleteRequest
