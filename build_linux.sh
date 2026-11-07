@@ -1,9 +1,10 @@
 #!/bin/sh
 # build_linux.sh - assemble and link the Linux server, and compile the test tools.
 #
-# Needs UASM (https://github.com/Terraspace/UASM), GNU ld and gcc. Point UASM_BIN at the assembler
-# if it isn't on your PATH. Don't use a variable called UASM: the assembler reads that for options. Sources are shared with Windows; Windows-only unwind directives are
-# removed first, as ELF has no use for them.
+# Needs UASM v2.56.2 (https://github.com/Terraspace/UASM), GNU ld and gcc. Point UASM_BIN at the
+# assembler if it isn't on your PATH. Don't use a variable called UASM: the assembler reads that
+# for options. Sources are shared with Windows; Windows-only unwind directives are removed first,
+# as ELF has no use for them.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out="$root/build"
@@ -24,7 +25,7 @@ ld -o "$out/mmoserver" -z noexecstack -z max-page-size=4096 \
     "$gen/net_linux.o" "$gen/main.o"
 
 # Test tools only: these are C and are not part of the server.
-gcc -O2 -no-pie -z noexecstack -o "$out/test_sim" "$root/tests/test_sim.c" "$gen/sim.o"
+gcc -O2 -Wno-format -no-pie -z noexecstack -o "$out/test_sim" "$root/tests/test_sim.c" "$gen/sim.o"
 gcc -O2 -pthread -o "$out/loadgen" "$root/tools/loadgen.c"
 
 echo "build ok: $out/mmoserver ($(wc -c < "$out/mmoserver") bytes)"

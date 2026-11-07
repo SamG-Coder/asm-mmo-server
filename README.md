@@ -1,6 +1,6 @@
 # MMO server in x86-64 assembly
 
-An authoritative, fixed-tick MMO server core for Windows, written entirely in MASM:
+An authoritative, fixed-tick MMO server core for Windows and Linux, written entirely in MASM:
 about 3,000 lines, an 18 KB executable, and no C runtime. The only code in the process
 that isn't ours is the Windows DLLs it calls (kernel32, ws2_32 and the synch API).
 
@@ -42,6 +42,39 @@ Arguments: `bench <players> <ticks> <threads> <world> <radius>` and
 | `python bench/trace_tail.py` | Compares slow ticks with typical ticks to show what differs |
 | `python bench/run_clean.py` | Full re-measure that repeats runs overlapping other heavy jobs (30+ min) |
 
+### Linux
+
+Needs [UASM v2.56.2](https://github.com/Terraspace/UASM/releases/tag/v2.56.2), GNU ld and gcc. UASM's
+master branch doesn't currently compile on Linux, so build the release. The commands are in
+[.github/workflows/linux.yml](.github/workflows/linux.yml).
+
+```bash
+UASM_BIN=/path/to/uasm sh build_linux.sh
+```
+
+```bash
+sudo sysctl -w net.core.rmem_max=67108864 net.core.wmem_max=67108864
+```
+
+```bash
+build/mmoserver serve 5000 60 2 793 50 30 27000
+```
+
+Inputs queue in the socket buffer between ticks, and Linux's default limit is small, which is why the
+`sysctl` matters. The server warns if its buffer is limited.
+
+The result is a static executable with no libc: only raw system calls. High priority uses `nice -10`,
+which an ordinary user usually isn't allowed to set. The report's `high priority` line shows whether
+it applied.
+
+**What's been tested on Linux:** every push runs the kernels against brute force on each tier, real UDP
+with hostile packets, and short load tests, on a 4-CPU GitHub Actions machine. The simulation produces
+exactly the same byte totals as on Windows. Linux networking uses `recvmmsg` and `sendmmsg`, with
+`io_uring` and AF_XDP as possible later steps.
+
+**Not yet on Linux:** the trace build, and any meaningful capacity figure. All the performance numbers
+below were measured on Windows. FreeBSD and other Unix systems would each need their own OS layer.
+
 ## Design
 
 Each tick has three steps. The main thread acts as worker 0.
@@ -71,7 +104,10 @@ The decisions that make it fast:
 | [src/defs.inc](src/defs.inc) | Constants, wire protocol, shared declarations |
 | [src/sim.asm](src/sim.asm) | Hot kernels in scalar, AVX2 and AVX-512 tiers |
 | [src/tier.asm](src/tier.asm) | Self-patching code sites and live tier selection |
-| [src/net.asm](src/net.asm) | Registered I/O setup, receive, send, input validation |
+| [src/os_windows.asm](src/os_windows.asm), [src/os_linux.asm](src/os_linux.asm) | Everything the server needs from each OS, except sockets |
+| [src/net.asm](src/net.asm) | Windows networking: Registered I/O |
+| [src/net_linux.asm](src/net_linux.asm) | Linux networking: `recvmmsg` and `sendmmsg` |
+| [src/input.asm](src/input.asm) | Input validation, shared by both |
 | [src/main.asm](src/main.asm) | Startup, threads, tick loop, report |
 | [src/util.asm](src/util.asm) | Console, memory, time, CPU check |
 | [bench/](bench/), [tools/](tools/), [tests/](tests/) | C and Python test tools; not part of the server |
@@ -383,8 +419,7 @@ user can currently open it, which is harmless only while it just answers a ping.
 - **Real network testing:** loopback only. Results on a real NIC will differ.
 - **Remaining tick stalls:** high priority removed the slow ticks in tests so far, but an earlier
   1 s tick was never explained, and these are short runs on a desktop.
-- **Windows only:** a Linux port would need new I/O and threading code, though the kernels
-  in `sim.asm` could mostly be reused after adjusting for the calling convention.
+- **Real network testing on Linux:** so far it has only run over loopback.
 - **Single-threaded grid build:** only 2.5 ms of a 36 ms tick at 1M players, so not urgent.
 
 ## License

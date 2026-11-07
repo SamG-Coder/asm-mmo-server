@@ -65,3 +65,8 @@ jobs:
 
       - name: Load test over loopback
         run: python3 bench/run_e2e.py 1 2000 5000
+
+      # Only 4 CPUs here, so these threads share cores. This checks that several workers
+      # function together, not how fast they are.
+      - name: Several workers over UDP
+        run: python3 bench/run_e2e.py 2 5000
