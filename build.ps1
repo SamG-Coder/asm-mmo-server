@@ -13,7 +13,7 @@ $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Lib" |
        Sort-Object Name | Select-Object -Last 1
 
 $objs = @()
-foreach ($name in 'util', 'sim', 'tier', 'net', 'main') {
+foreach ($name in 'util', 'os_windows', 'input', 'sim', 'tier', 'net', 'main') {
     $obj = "$out\$name.obj"
     & "$bin\ml64.exe" /nologo /c /W3 /Zi /I "$root\src" /Fo $obj "$root\src\$name.asm"
     if ($LASTEXITCODE) { throw "assembling $name.asm failed" }
@@ -31,7 +31,7 @@ if ($LASTEXITCODE) { throw 'linking failed' }
 # Trace build: same code plus per-tick timing, written to trace.bin. See bench/diagnose.py.
 $traceDir = "$out\trace"
 New-Item -ItemType Directory -Force $traceDir | Out-Null
-$traceObjs = @("$out\util.obj", "$out\sim.obj", "$out\tier.obj")
+$traceObjs = @("$out\util.obj", "$out\os_windows.obj", "$out\input.obj", "$out\sim.obj", "$out\tier.obj")
 foreach ($name in 'net', 'main') {
     $obj = "$traceDir\$name.obj"
     & "$bin\ml64.exe" /nologo /c /W3 /DTRACE /I "$root\src" /Fo $obj "$root\src\$name.asm"

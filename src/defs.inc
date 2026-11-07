@@ -1,4 +1,8 @@
 ; defs.inc - shared constants, data layout, wire protocol and imports.
+IFDEF LINUX
+    .x64
+    .model flat
+ENDIF
 OPTION CASEMAP:NONE
 
 ; ---- limits and tuning -------------------------------------------------------
@@ -105,7 +109,25 @@ EXTERNDEF g_echo:QWORD
 EXTERNDEF g_addr:QWORD
 
 ; ---- our own procedures ------------------------------------------------------
-EXTERNDEF print_init:PROC
+EXTERNDEF start:PROC
+EXTERNDEF os_init:PROC
+EXTERNDEF os_args:PROC
+EXTERNDEF os_write:PROC
+EXTERNDEF os_exit:PROC
+EXTERNDEF os_alloc:PROC
+EXTERNDEF os_freq:PROC
+EXTERNDEF os_cpu_count:PROC
+EXTERNDEF os_pin:PROC
+EXTERNDEF os_spawn:PROC
+EXTERNDEF os_wait:PROC
+EXTERNDEF os_wake:PROC
+EXTERNDEF os_sleep:PROC
+EXTERNDEF os_raise_priority:PROC
+EXTERNDEF os_code_writable:PROC
+EXTERNDEF os_code_executable:PROC
+EXTERNDEF os_thread_cycles:PROC
+EXTERNDEF os_write_file:PROC
+EXTERNDEF input_apply:PROC
 EXTERNDEF print_str:PROC
 EXTERNDEF print_u64:PROC
 EXTERNDEF die:PROC
@@ -136,7 +158,7 @@ EXTERNDEF net_flush:PROC
 EXTERNDEF net_tx_acquire:PROC
 EXTERNDEF net_send:PROC
 
-; ---- Windows imports: the only code in the process that is not ours ----------
+; ---- Windows imports, used by os_windows.asm and net.asm only ----------------
 EXTERNDEF ExitProcess:PROC
 EXTERNDEF GetStdHandle:PROC
 EXTERNDEF WriteFile:PROC

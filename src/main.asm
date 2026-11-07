@@ -48,6 +48,7 @@ logical_cpus dq 0
 first_core  dq 0                        ; physical core that worker 0 is pinned to
 send_mask   dq 0                        ; send a player's snapshot when (slot + tick) & this = 0
 high_priority dq 0
+priority_raised dq 0
 g_cpu_level dq 0
 g_force_tier dq 3
 target_ticks dq 0
@@ -109,28 +110,8 @@ parse_args PROC FRAME
     sub rsp, 40
     .allocstack 40
     .endprolog
-    call GetCommandLineA
+    call os_args
     mov r8, rax
-    ; skip argv[0], which may be quoted
-    cmp byte ptr [r8], '"'
-    jne plain
-    inc r8
-quoted:
-    mov al, [r8]
-    test al, al
-    jz usage
-    inc r8
-    cmp al, '"'
-    jne quoted
-    jmp mode
-plain:
-    mov al, [r8]
-    test al, al
-    jz usage
-    cmp al, ' '
-    je mode
-    inc r8
-    jmp plain
 mode:
     cmp byte ptr [r8], ' '
     jne @F
@@ -286,13 +267,10 @@ setup PROC FRAME
     .allocstack 112
     .endprolog
 
-    lea rcx, [rsp + 32]
-    call GetSystemInfo
-    mov eax, dword ptr [rsp + 32 + 32]  ; SYSTEM_INFO.dwNumberOfProcessors
+    call os_cpu_count
     mov logical_cpus, rax
-
-    lea rcx, freq
-    call QueryPerformanceFrequency
+    call os_freq
+    mov freq, rax
 
     ; derived simulation constants
     mov rax, g_hz
@@ -605,15 +583,11 @@ trace_buf       dq 0
 
 ; thread_cycles() -> rax = CPU cycles this thread has consumed
 thread_cycles PROC FRAME
-    sub rsp, 56
-    .allocstack 56
+    sub rsp, 40
+    .allocstack 40
     .endprolog
-    call GetCurrentThread
-    mov rcx, rax
-    lea rdx, [rsp + 40]
-    call QueryThreadCycleTime
-    mov rax, [rsp + 40]
-    add rsp, 56
+    call os_thread_cycles
+    add rsp, 40
     ret
 thread_cycles ENDP
 
@@ -728,20 +702,9 @@ trace_dump PROC FRAME
 trace_name db "trace.bin", 0
     .code
     lea rcx, trace_name
-    mov edx, 40000000h                  ; GENERIC_WRITE
-    xor r8d, r8d
-    xor r9d, r9d
-    mov qword ptr [rsp + 32], 2         ; CREATE_ALWAYS
-    mov qword ptr [rsp + 40], 80h       ; FILE_ATTRIBUTE_NORMAL
-    mov qword ptr [rsp + 48], 0
-    call CreateFileA
-    mov rbx, rax
-    mov rcx, rax
     mov rdx, trace_buf
     mov r8, rsi
-    lea r9, [rsp + 56]
-    mov qword ptr [rsp + 32], 0
-    call WriteFile
+    call os_write_file
     add rsp, 72
     pop rsi
     pop rbx
@@ -751,25 +714,16 @@ ENDIF
 
 ; pin_current(rcx = worker index) - one worker per physical core (assumes 2-way SMT)
 pin_current PROC FRAME
-    push rbx
-    .pushreg rbx
-    sub rsp, 32
-    .allocstack 32
+    sub rsp, 40
+    .allocstack 40
     .endprolog
     add rcx, first_core
     lea rax, [rcx + rcx]
     xor edx, edx
     div logical_cpus
-    mov eax, 1
-    mov ecx, edx
-    shl rax, cl
-    mov rbx, rax
-    call GetCurrentThread
-    mov rcx, rax
-    mov rdx, rbx
-    call SetThreadAffinityMask
-    add rsp, 32
-    pop rbx
+    mov rcx, rdx
+    call os_pin
+    add rsp, 40
     ret
 pin_current ENDP
 
@@ -797,12 +751,9 @@ spin:
     pause
     dec ecx
     jnz spin
-    mov [rsp + 32], rdi
     mov rcx, rsi
-    lea rdx, [rsp + 32]
-    mov r8d, 8
-    mov r9d, -1
-    call WaitOnAddress
+    mov rdx, rdi
+    call os_wait
     jmp wait_gen
 go:
     mov rdi, [rsi + CTRL_GEN]
@@ -839,13 +790,9 @@ next:
     cmp rsi, g_threads
     jae done
     add rbx, SIZEOF WORKER
-    xor ecx, ecx
-    xor edx, edx
-    lea r8, worker_main
-    mov r9, rbx
-    mov qword ptr [rsp + 32], 0
-    mov qword ptr [rsp + 40], 0
-    call CreateThread
+    lea rcx, worker_main
+    mov rdx, rbx
+    call os_spawn
     test rax, rax
     jnz @F
     FAIL "error: could not create worker thread"
@@ -877,7 +824,7 @@ run_phase PROC FRAME
     cmp g_threads, 1
     je local_work
     mov rcx, rsi
-    call WakeByAddressAll
+    call os_wake
 local_work:
     cmp rbx, PH_EXIT
     je wait_all
@@ -1017,24 +964,13 @@ serve_loop PROC FRAME
     .pushreg rsi
     push rdi
     .pushreg rdi
-    push r12
-    .pushreg r12
-    sub rsp, 72
-    .allocstack 72
+    sub rsp, 32
+    .allocstack 32
     .endprolog
-    xor ecx, ecx
-    xor edx, edx
-    mov r8d, 2                          ; CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
-    mov r9d, 1F0003h                    ; TIMER_ALL_ACCESS
-    call CreateWaitableTimerExW
-    test rax, rax
-    jnz @F
-    FAIL "error: could not create high resolution timer"
-@@: mov r12, rax
     mov rax, freq
     xor edx, edx
     div g_hz
-    mov rdi, rax                        ; ticks of QPC per game tick
+    mov rdi, rax                        ; clock ticks per game tick
     mov rax, arg_count
     imul rax, g_hz
     mov rbx, rax                        ; game ticks left to run
@@ -1046,23 +982,13 @@ next:
     mov rcx, rsi
     sub rcx, rax
     jle run
-    mov edx, 10000000                   ; QPC ticks -> 100 ns units
+    mov edx, 10000000                   ; clock ticks -> 100 ns units
     mov r8, freq
     call muldiv
     test rax, rax
     jz run
-    neg rax
-    mov [rsp + 64], rax
-    mov rcx, r12
-    lea rdx, [rsp + 64]
-    xor r8d, r8d
-    xor r9d, r9d
-    mov qword ptr [rsp + 32], 0
-    mov qword ptr [rsp + 40], 0
-    call SetWaitableTimer
-    mov rcx, r12
-    mov edx, -1
-    call WaitForSingleObject
+    mov rcx, rax
+    call os_sleep
 run:
     call tick_once
     add rsi, rdi
@@ -1073,8 +999,7 @@ run:
     mov rsi, rax
 @@: dec rbx
     jnz next
-    add rsp, 72
-    pop r12
+    add rsp, 32
     pop rdi
     pop rsi
     pop rbx
@@ -1228,6 +1153,7 @@ report PROC FRAME
     call sum_field
     REPORT_LINE "send failures    : ", rax
     REPORT_LINE "tick overruns    : ", overruns
+    REPORT_LINE "high priority    : ", priority_raised
 done:
     add rsp, 32
     pop rbx
@@ -1240,7 +1166,7 @@ start PROC FRAME
     sub rsp, 40
     .allocstack 40
     .endprolog
-    call print_init
+    call os_init
     call cpu_check
     call parse_args
     call setup
@@ -1248,10 +1174,8 @@ start PROC FRAME
     je @F
     ; Traces showed slow ticks are mostly pinned workers waking late or losing their core to
     ; normal-priority threads. Raising the priority removed both at 20,000 players.
-    call GetCurrentProcess
-    mov rcx, rax
-    mov edx, 80h                        ; HIGH_PRIORITY_CLASS
-    call SetPriorityClass
+    call os_raise_priority
+    mov priority_raised, rax
 @@: call tier_init
     IFDEF TRACE
     call trace_alloc
@@ -1272,7 +1196,7 @@ finish:
     call trace_dump
     ENDIF
     xor ecx, ecx
-    call ExitProcess
+    call os_exit
     int 3
 start ENDP
 

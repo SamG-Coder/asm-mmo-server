@@ -45,7 +45,6 @@ ADDR_LEN        equ 28                  ; sizeof(SOCKADDR_INET)
 TX_SLOT         equ 640                 ; holds the largest snapshot sim_query can write
 
 .const
-input_scale     REAL4 0.008             ; MAX_SPEED / INPUT_RANGE
 ; WSAID_MULTIPLE_RIO {8509E081-96DD-4005-B165-9E2EE8C79E3F}
 rio_guid        dd 8509E081h
                 dw 96DDh, 4005h
@@ -395,11 +394,8 @@ net_commit_rx PROC FRAME
 net_commit_rx ENDP
 
 ; net_drain(rcx = WORKER*) - apply all completed receives, then repost their slots.
-;
-; Nothing from the network is trusted: bad sizes or magic, slots owned by another
-; worker and old sequence numbers are dropped, and movement is clamped here so that a
-; client can never exceed MAX_SPEED. Reposts are only committed at the end, so a packet
-; flood is bounded by the number of receive slots and cannot stall the tick.
+; Reposts are only committed at the end, so a packet flood is bounded by the number of
+; receive slots and cannot stall the tick.
 net_drain PROC FRAME
     push rbx
     .pushreg rbx
@@ -437,63 +433,14 @@ result:
     mov r13, qword ptr [rsi + RESULT_REQUEST]
     imul r14, r13, RX_SLOT
     add r14, [rbx].WORKER.w_rxbuf
-    inc [rbx].WORKER.w_rxpkts
-
+    mov rcx, rbx
+    mov rdx, r14
+    mov r8d, dword ptr [rsi + RESULT_BYTES]
     cmp dword ptr [rsi + RESULT_STATUS], 0
-    jne bad                             ; e.g. a datagram larger than the slot
-    cmp dword ptr [rsi + RESULT_BYTES], INPUT_SIZE
-    jne bad
-    cmp dword ptr [r14], INPUT_MAGIC
-    jne bad
-    mov edi, dword ptr [r14 + 4]        ; player
-    cmp rdi, [rbx].WORKER.w_first
-    jb bad
-    cmp rdi, [rbx].WORKER.w_last
-    jae bad
-
-    mov rcx, g_seq
-    mov eax, dword ptr [r14 + 8]
-    mov edx, eax
-    sub edx, dword ptr [rcx + rdi*4]
-    jle repost                          ; signed: survives sequence wraparound
-    mov dword ptr [rcx + rdi*4], eax
-
-    mov rax, [r14 + 16]
-    mov rcx, g_echo
-    mov [rcx + rdi*8], rax
-
-    mov rcx, g_addr                     ; replies go to wherever the client is now
-    mov rax, rdi
-    shl rax, ADDR_SHIFT
-    movups xmm0, xmmword ptr [r14 + RX_PAYLOAD]
-    movups xmm1, xmmword ptr [r14 + RX_PAYLOAD + 16]
-    movups xmmword ptr [rcx + rax], xmm0
-    movups xmmword ptr [rcx + rax + 16], xmm1
-
-    ; Velocity = clamp(input) * MAX_SPEED / INPUT_RANGE
-    mov eax, INPUT_RANGE
-    mov edx, -INPUT_RANGE
-    movsx ecx, word ptr [r14 + 12]
-    cmp ecx, eax
-    cmovg ecx, eax
-    cmp ecx, edx
-    cmovl ecx, edx
-    cvtsi2ss xmm0, ecx
-    movsx ecx, word ptr [r14 + 14]
-    cmp ecx, eax
-    cmovg ecx, eax
-    cmp ecx, edx
-    cmovl ecx, edx
-    cvtsi2ss xmm1, ecx
-    mulss xmm0, input_scale
-    mulss xmm1, input_scale
-    mov rax, g_vx
-    movss dword ptr [rax + rdi*4], xmm0
-    mov rax, g_vy
-    movss dword ptr [rax + rdi*4], xmm1
-    jmp repost
-bad:
-    inc [rbx].WORKER.w_rxbad
+    je @F
+    mov r8d, -1                         ; failed, e.g. a datagram larger than the slot
+@@: lea r9, [r14 + RX_PAYLOAD]
+    call input_apply
 repost:
     mov rcx, rbx
     mov rdx, r13

@@ -2,38 +2,22 @@
 include defs.inc
 
 .data
-stdout_handle   dq 0
 rng_state       dq 9E3779B97F4A7C15h    ; fixed seed: benchmark runs are repeatable
 
 .code
 
-print_init PROC FRAME
+; print_str(rcx = zero-terminated string)
+print_str PROC FRAME
     sub rsp, 40
     .allocstack 40
     .endprolog
-    mov ecx, -11                        ; STD_OUTPUT_HANDLE
-    call GetStdHandle
-    mov stdout_handle, rax
-    add rsp, 40
-    ret
-print_init ENDP
-
-; print_str(rcx = zero-terminated string)
-print_str PROC FRAME
-    sub rsp, 56
-    .allocstack 56
-    .endprolog
-    mov rdx, rcx
-    xor r8d, r8d
-@@: cmp byte ptr [rdx + r8], 0
+    xor edx, edx
+@@: cmp byte ptr [rcx + rdx], 0
     je @F
-    inc r8
+    inc rdx
     jmp @B
-@@: mov rcx, stdout_handle
-    lea r9, [rsp + 40]
-    mov qword ptr [rsp + 32], 0
-    call WriteFile
-    add rsp, 56
+@@: call os_write
+    add rsp, 40
     ret
 print_str ENDP
 
@@ -66,7 +50,7 @@ die PROC FRAME
     .endprolog
     call print_str
     mov ecx, 1
-    call ExitProcess
+    call os_exit
     int 3
 die ENDP
 
@@ -75,29 +59,13 @@ alloc_zeroed PROC FRAME
     sub rsp, 40
     .allocstack 40
     .endprolog
-    mov rdx, rcx
-    xor ecx, ecx
-    mov r8d, 3000h                      ; MEM_COMMIT | MEM_RESERVE
-    mov r9d, 4                          ; PAGE_READWRITE
-    call VirtualAlloc
+    call os_alloc
     test rax, rax
     jnz @F
     FAIL "error: out of memory"
 @@: add rsp, 40
     ret
 alloc_zeroed ENDP
-
-; now_qpc() -> rax = performance counter
-now_qpc PROC FRAME
-    sub rsp, 56
-    .allocstack 56
-    .endprolog
-    lea rcx, [rsp + 32]
-    call QueryPerformanceCounter
-    mov rax, [rsp + 32]
-    add rsp, 56
-    ret
-now_qpc ENDP
 
 ; muldiv(rcx, rdx, r8) -> rax = rcx * rdx / r8, with a 128-bit intermediate.
 ; r8 = 0 yields 0, so reports stay valid when nothing was counted.

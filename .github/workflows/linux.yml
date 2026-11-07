@@ -1,0 +1,65 @@
+name: Linux
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Pinned, so a change in the assembler can't silently change what gets built.
+      UASM_COMMIT: bffb18461dd541479064990c3b2750ab50ae23e2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the machine
+        run: |
+          uname -a
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Flags' | sed -E 's/^Flags.*/avx2: '"$(grep -c avx2 /proc/cpuinfo)"', avx512f: '"$(grep -c avx512f /proc/cpuinfo)"'/'
+
+      - name: Cache UASM
+        id: uasm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/uasm-bin
+          key: uasm-${{ env.UASM_COMMIT }}
+
+      - name: Build UASM
+        if: steps.uasm-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/uasm-src ~/uasm-bin
+          cd ~/uasm-src
+          git init -q
+          git fetch -q --depth 1 https://github.com/Terraspace/UASM.git "$UASM_COMMIT"
+          git checkout -q FETCH_HEAD
+          make -f gccLinux64.mak CFLAGS_EXTRA= -j4 || make -f gccLinux64.mak -j4
+          cp "$(find . -type f -name uasm -perm -u+x | head -n 1)" ~/uasm-bin/uasm
+
+      - name: Allow large socket buffers
+        run: sudo sysctl -w net.core.rmem_max=67108864 net.core.wmem_max=67108864
+
+      - name: Build
+        run: UASM=~/uasm-bin/uasm sh build_linux.sh
+
+      - name: Inspect the server binary
+        run: |
+          file build/mmoserver
+          echo "dynamic dependencies (should be none):"
+          ldd build/mmoserver || true
+
+      - name: Kernels against brute force, every tier the CPU supports
+        run: build/test_sim
+
+      - name: Same simulation output as Windows
+        run: python3 tests/check_bytes.py
+
+      - name: Real UDP and hostile packets
+        run: python3 tests/test_net.py
+
+      - name: Load test over loopback
+        run: python3 bench/run_e2e.py 1 2000 5000

@@ -18,8 +18,6 @@ FIRST_PROFILE   equ 8
 SWITCH_PERCENT  equ 95                  ; a rival must be this fraction of the current cost
 TIERS           equ 3
 TIER_AUTO       equ 3
-PAGE_READWRITE  equ 4
-PAGE_EXECUTE_READ equ 20h
 
 ; Own page: changing its protection can't affect any other code.
 _SITES SEGMENT ALIGN(4096) READ EXECUTE 'CODE'
@@ -70,10 +68,7 @@ patch_site PROC FRAME
     .endprolog
     mov rbx, rcx
     mov rsi, rdx
-    mov edx, 5
-    mov r8d, PAGE_READWRITE
-    lea r9, [rsp + 40]
-    call VirtualProtect
+    call os_code_writable
     test eax, eax
     jnz @F
     FAIL "error: could not make the code page writable"
@@ -83,19 +78,11 @@ patch_site PROC FRAME
     mov byte ptr [rbx], 0E9h
     mov dword ptr [rbx + 1], eax
     mov rcx, rbx
-    mov edx, 5
-    mov r8d, PAGE_EXECUTE_READ
-    lea r9, [rsp + 40]
-    call VirtualProtect
+    call os_code_executable
     test eax, eax
     jnz @F
     FAIL "error: could not restore the code page"
-@@: call GetCurrentProcess
-    mov rcx, rax
-    mov rdx, rbx
-    mov r8d, 5
-    call FlushInstructionCache
-    inc patches
+@@: inc patches
     add rsp, 56
     pop rsi
     pop rbx

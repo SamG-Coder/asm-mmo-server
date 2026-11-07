@@ -8,7 +8,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#define KERNEL
+#else
+#include <sys/mman.h>
+/* The kernels take arguments in rcx and rdx on every system. */
+#define KERNEL __attribute__((ms_abi))
+#endif
 
 #define MAX_VISIBLE 64
 #define PAD 64
@@ -20,18 +27,18 @@ uint64_t g_entsize;
 float *g_px, *g_py, *g_vx, *g_vy, *g_sx, *g_sy;
 uint32_t *g_cell, *g_start, *g_id;
 
-extern void integrate_scalar(uint64_t first, uint64_t last);
-extern void integrate_avx2(uint64_t first, uint64_t last);
-extern void cells_scalar(void);
-extern void cells_avx2(void);
-extern uint64_t query_scalar(uint64_t slot, uint8_t *out);
-extern uint64_t query_avx2(uint64_t slot, uint8_t *out);
-extern uint64_t query_avx512(uint64_t slot, uint8_t *out);
-extern void sim_grid_build(void);
+extern KERNEL void integrate_scalar(uint64_t first, uint64_t last);
+extern KERNEL void integrate_avx2(uint64_t first, uint64_t last);
+extern KERNEL void cells_scalar(void);
+extern KERNEL void cells_avx2(void);
+extern KERNEL uint64_t query_scalar(uint64_t slot, uint8_t *out);
+extern KERNEL uint64_t query_avx2(uint64_t slot, uint8_t *out);
+extern KERNEL uint64_t query_avx512(uint64_t slot, uint8_t *out);
+extern KERNEL void sim_grid_build(void);
 
 /* The test picks the kernels directly. In the server, tier.asm patches these sites. */
 static int tier;
-void site_cells(void) { if (tier) cells_avx2(); else cells_scalar(); }
+KERNEL void site_cells(void) { if (tier) cells_avx2(); else cells_scalar(); }
 static void sim_integrate(uint64_t first, uint64_t last) {
     if (tier) integrate_avx2(first, last); else integrate_scalar(first, last);
 }
@@ -48,7 +55,11 @@ static float randf(void) {
 }
 
 static void *zalloc(size_t n) {
+#ifdef _WIN32
     return VirtualAlloc(NULL, n, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    return mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
 }
 
 static int failures;

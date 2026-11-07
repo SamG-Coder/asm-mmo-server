@@ -8,10 +8,23 @@
  *   usage: loadgen <bots> <players> <threads> <hz> <seconds> <port> [first cpu] [send every]
  *   <players> and <threads> must match the server, so slot ranges line up.
  */
+#ifdef _WIN32
 #define _WIN32_WINNT 0x0A00
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+typedef int SOCKET;
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,12 +52,53 @@ typedef struct {
     uint32_t *hist; /* round trip, 10 us bins */
 } Thread;
 
-static LARGE_INTEGER freq;
+static uint64_t freq_hz;
+
+#ifdef _WIN32
+#define THREAD_RESULT DWORD WINAPI
 static uint64_t now(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     return (uint64_t)t.QuadPart;
 }
+static void init_platform(void) {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    freq_hz = (uint64_t)f.QuadPart;
+}
+static int cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+}
+static void pin(int cpu) { SetThreadAffinityMask(GetCurrentThread(), 1ull << cpu); }
+static void yield_cpu(void) { SwitchToThread(); }
+static void make_nonblocking(SOCKET s) {
+    u_long nonblocking = 1;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+    DWORD off = 0, ret;
+    WSAIoctl(s, 0x9800000C, &off, sizeof off, NULL, 0, &ret, NULL, NULL);
+}
+#else
+#define THREAD_RESULT void *
+static uint64_t now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+static void init_platform(void) { freq_hz = 1000000000ull; }
+static int cpu_count(void) { return (int)sysconf(_SC_NPROCESSORS_ONLN); }
+static void pin(int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+}
+static void yield_cpu(void) { sched_yield(); }
+static void make_nonblocking(SOCKET s) { fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK); }
+#endif
 
 static void open_socket(Thread *t) {
     t->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -53,23 +107,20 @@ static void open_socket(Thread *t) {
     setsockopt(t->sock, SOL_SOCKET, SO_SNDBUF, (char *)&buf, sizeof buf);
     struct sockaddr_in to = {0};
     to.sin_family = AF_INET;
-    to.sin_port = htons((u_short)(t->port + t->index));
+    to.sin_port = htons((uint16_t)(t->port + t->index));
     to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     connect(t->sock, (struct sockaddr *)&to, sizeof to);
-    u_long nonblocking = 1;
-    ioctlsocket(t->sock, FIONBIO, &nonblocking);
-    DWORD off = 0, ret;
-    WSAIoctl(t->sock, 0x9800000C, &off, sizeof off, NULL, 0, &ret, NULL, NULL);
+    make_nonblocking(t->sock);
 }
 
 /* One thread per server worker: send a burst of inputs, then read snapshots until the next
    period. Separate send and receive threads on SMT siblings were tried and kept up worse.
    Only the measured window counts: the server keeps sending after that, so counting a tail
    would push delivery past 100% and hide real losses. */
-static DWORD WINAPI run(void *arg) {
+static THREAD_RESULT run(void *arg) {
     Thread *t = arg;
-    SetThreadAffinityMask(GetCurrentThread(), 1ull << t->cpu);
-    uint64_t period = (uint64_t)freq.QuadPart / t->hz;
+    pin(t->cpu);
+    uint64_t period = freq_hz / t->hz;
     uint64_t next = now();
     uint32_t seq = 0, rng = 0x12345u + t->index;
     char rx[2048];
@@ -93,7 +144,7 @@ static DWORD WINAPI run(void *arg) {
             int n = recv(t->sock, rx, sizeof rx, 0);
             if (n < 0) {
                 if (now() >= next) break;
-                SwitchToThread();
+                yield_cpu();
                 continue;
             }
             SnapHeader *h = (SnapHeader *)rx;
@@ -105,7 +156,7 @@ static DWORD WINAPI run(void *arg) {
             t->received++;
             t->entries += (uint64_t)count;
             t->bytes += (uint64_t)n;
-            uint64_t us = (uint32_t)((uint32_t)now() - h->time) * 100000ull / (uint64_t)freq.QuadPart;
+            uint64_t us = (uint32_t)((uint32_t)now() - h->time) * 100000ull / freq_hz;
             t->hist[us < HIST ? us : HIST - 1]++;
         }
         if (rec) {
@@ -113,7 +164,7 @@ static DWORD WINAPI run(void *arg) {
             rec->received = t->received - before;
         }
     }
-    return 0;
+    return (THREAD_RESULT)0;
 }
 
 int main(int argc, char **argv) {
@@ -130,19 +181,19 @@ int main(int argc, char **argv) {
     /* The server sends each player a snapshot every this many ticks. */
     int every = argc > 8 ? atoi(argv[8]) : 1;
 
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-    QueryPerformanceFrequency(&freq);
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    int cpus = (int)si.dwNumberOfProcessors;
+    init_platform();
+    int cpus = cpu_count();
 
     /* Same slot division as the server's setup. */
     int per = ((players + threads - 1) / threads + 7) & ~7;
 
     Thread *t = calloc(threads, sizeof(Thread));
+#ifdef _WIN32
     HANDLE *h = calloc(threads, sizeof(HANDLE));
-    uint64_t end = now() + (uint64_t)freq.QuadPart * seconds;
+#else
+    pthread_t *h = calloc(threads, sizeof(pthread_t));
+#endif
+    uint64_t end = now() + freq_hz * seconds;
     for (int i = 0; i < threads; i++) {
         int first = i * per, last = first + per;
         t[i].index = i;
@@ -156,17 +207,27 @@ int main(int argc, char **argv) {
         t[i].end = end;
         t[i].hist = calloc(HIST, sizeof(uint32_t));
         open_socket(&t[i]);
+#ifdef _WIN32
         h[i] = CreateThread(NULL, 0, run, &t[i], 0, NULL);
+#else
+        pthread_create(&h[i], NULL, run, &t[i]);
+#endif
     }
+#ifdef _WIN32
     WaitForMultipleObjects(threads, h, TRUE, INFINITE);
+#else
+    for (int i = 0; i < threads; i++) pthread_join(h[i], NULL);
+#endif
 
     if (getenv("LOADGEN_TRACE")) {
         FILE *f = fopen(getenv("LOADGEN_TRACE"), "w");
         fprintf(f, "thread,period,start,send_end,drain_end,received\n");
         for (int i = 0; f && i < threads; i++)
             for (int p = 0; p < t[i].periods; p++)
-                fprintf(f, "%d,%d,%llu,%llu,%llu,%llu\n", i, p, t[i].trace[p].start,
-                        t[i].trace[p].send_end, t[i].trace[p].drain_end, t[i].trace[p].received);
+                fprintf(f, "%d,%d,%llu,%llu,%llu,%llu\n", i, p, (unsigned long long)t[i].trace[p].start,
+                        (unsigned long long)t[i].trace[p].send_end,
+                        (unsigned long long)t[i].trace[p].drain_end,
+                        (unsigned long long)t[i].trace[p].received);
         if (f) fclose(f);
     }
 
@@ -191,14 +252,16 @@ int main(int argc, char **argv) {
         seen += all[b];
     }
     printf("bots             : %d\n", bots);
-    printf("inputs sent      : %llu (%llu/s), %llu failed\n", sent, sent / seconds, fail);
-    printf("snapshots recv   : %llu (%llu/s), %llu malformed\n", recvd, recvd / seconds, bad);
+    printf("inputs sent      : %llu (%llu/s), %llu failed\n", (unsigned long long)sent,
+           (unsigned long long)(sent / seconds), (unsigned long long)fail);
+    printf("snapshots recv   : %llu (%llu/s), %llu malformed\n", (unsigned long long)recvd,
+           (unsigned long long)(recvd / seconds), (unsigned long long)bad);
     printf("input rate       : %.1f%%\n", 100.0 * sent / ((double)bots * hz * seconds));
-    printf("expected snaps   : %llu\n", (uint64_t)bots * hz * seconds / every);
+    printf("expected snaps   : %llu\n", (unsigned long long)bots * hz * seconds / every);
     printf("delivery         : %.2f%%\n", 100.0 * recvd * every / ((double)bots * hz * seconds));
     printf("bandwidth        : %.1f MB/s\n", (double)bytes / seconds / 1e6);
-    printf("avg entries/snap : %llu\n", samples ? entries / samples : 0);
-    printf("round trip p50   : %llu us\n", p50);
-    printf("round trip p99   : %llu us\n", p99);
+    printf("avg entries/snap : %llu\n", (unsigned long long)(samples ? entries / samples : 0));
+    printf("round trip p50   : %llu us\n", (unsigned long long)p50);
+    printf("round trip p99   : %llu us\n", (unsigned long long)p99);
     return 0;
 }

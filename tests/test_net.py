@@ -6,6 +6,7 @@ checks the replies, and checks that the server survived and counted the rejects.
 
     python tests/test_net.py
 """
+import os
 import pathlib
 import re
 import socket
@@ -14,7 +15,7 @@ import subprocess
 import sys
 import time
 
-EXE = pathlib.Path(__file__).resolve().parent.parent / "build" / "mmoserver.exe"
+EXE = pathlib.Path(__file__).resolve().parent.parent / "build" / ("mmoserver.exe" if os.name == "nt" else "mmoserver")
 PORT = 27900
 PLAYERS = 64
 INPUT_MAGIC = 0x494F4D4D
